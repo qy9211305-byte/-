@@ -1,63 +1,514 @@
 
 <!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PhysiLab: EM Field Simulator</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
-    <style>
-      body {
-        font-family: 'Inter', sans-serif;
-        margin: 0;
-        padding: 0;
-        overflow: hidden;
-        background-color: #0f172a;
-      }
-      .fira-code {
-        font-family: 'Fira Code', monospace;
-      }
-      /* 自定义滚动条 */
-      .custom-scrollbar::-webkit-scrollbar {
-        width: 6px;
-      }
-      .custom-scrollbar::-webkit-scrollbar-track {
-        background: #0f172a;
-      }
-      .custom-scrollbar::-webkit-scrollbar-thumb {
-        background: #334155;
-        border-radius: 10px;
-      }
-      .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-        background: #475569;
-      }
-    </style>
-    <script>
-      /**
-       * 核心修复：浏览器环境补丁
-       * 许多 NPM 模块（如 @google/genai）会检查 process.env。
-       * 在没有构建工具的原始环境中，必须手动定义它以防止 SyntaxError 或 ReferenceError。
-       */
-      window.process = window.process || { env: { API_KEY: "" } };
-    </script>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PhysiLab: 电磁场模拟实验室</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Inter', sans-serif; margin: 0; background-color: #020617; color: #e2e8f0; overflow: hidden; }
+    .fira-code { font-family: 'Fira Code', monospace; }
+    .custom-scrollbar::-webkit-scrollbar { width: 5px; }
+    .custom-scrollbar::-webkit-scrollbar-track { background: #0f172a; }
+    .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+    canvas { touch-action: none; }
+    @keyframes pulse-slow { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+    .animate-pulse-slow { animation: pulse-slow 3s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+  </style>
+  <script>
+    window.process = { env: { API_KEY: "" } };
+  </script>
   <script type="importmap">
 {
   "imports": {
-    "react": "https://esm.sh/react@^19.2.3",
-    "react-dom": "https://esm.sh/react-dom@^19.2.3",
-    "react-dom/client": "https://esm.sh/react-dom@^19.2.3/client",
-    "react/": "https://esm.sh/react@^19.2.3/",
-    "@google/genai": "https://esm.sh/@google/genai@^1.34.0",
-    "lucide-react": "https://esm.sh/lucide-react@^0.562.0",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.3/"
+    "react": "https://esm.sh/react@19.0.0",
+    "react-dom": "https://esm.sh/react-dom@19.0.0",
+    "react-dom/client": "https://esm.sh/react-dom@19.0.0/client",
+    "@google/genai": "https://esm.sh/@google/genai@1.3.0",
+    "lucide-react": "https://esm.sh/lucide-react@0.460.0",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "react/": "https://esm.sh/react@^19.2.3/"
   }
 }
 </script>
 </head>
-  <body>
-    <div id="root"></div>
-    <!-- 关键修复：指向正确的入口文件 -->
-    <script type="module" src="./index.tsx"></script>
-  </body>
+<body>
+  <div id="root"></div>
+
+  <script type="module">
+    import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { GoogleGenAI, Type } from '@google/genai';
+    import { 
+      Play, Pause, RotateCcw, Image as ImageIcon, Trash2, 
+      Settings2, Activity, Zap, Crosshair, Send, Layers,
+      MoveDown, X, Maximize2, HelpCircle, CircleDot, Save, 
+      FolderOpen, Download, Upload, Check, Info, Terminal, Key
+    } from 'lucide-react';
+
+    // --- 1. 物理引擎逻辑 (Boris Algorithm) ---
+    const DT = 0.01;
+    const G = 9.8;
+    const MAX_PATH_LENGTH = 1000;
+
+    const updatePhysics = (particles, regions, gravityEnabled) => {
+      return particles.map(p => {
+        let totalEx = 0, totalEy = 0, totalBz = 0;
+        regions.forEach(r => {
+          if (p.x >= r.x && p.x <= r.x + r.width && p.y >= r.y && p.y <= r.y + r.height) {
+            totalEx += r.ex; totalEy += r.ey; totalBz += r.bz;
+          }
+        });
+
+        const halfDt = DT / 2;
+        const qOverM = p.q / p.m;
+        let vx = p.vx + qOverM * totalEx * halfDt;
+        let vy = p.vy + qOverM * totalEy * halfDt;
+        const omega = qOverM * (-totalBz) * halfDt;
+        const vpx = vx + vy * omega;
+        const vpy = vy - vx * omega;
+        const s = (2 * omega) / (1 + omega * omega);
+        vx = vx + vpy * s;
+        vy = vy - vpx * s;
+        vx = vx + qOverM * totalEx * halfDt;
+        vy = vy + qOverM * totalEy * halfDt;
+        if (gravityEnabled) vy -= G * DT;
+
+        const newX = p.x + vx * DT;
+        const newY = p.y + vy * DT;
+        const newPath = [...p.path, { x: newX, y: newY }];
+        if (newPath.length > MAX_PATH_LENGTH) newPath.shift();
+
+        return { ...p, x: newX, y: newY, vx, vy, path: newPath };
+      });
+    };
+
+    // --- 2. AI 服务逻辑 ---
+    const parseProblem = async (input, imageData) => {
+      if (!process.env.API_KEY) {
+        alert("请先在 Vercel 环境变量或本地配置 API_KEY");
+        return null;
+      }
+      try {
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const model = "gemini-3-flash-preview";
+        const prompt = "分析此物理题目（带电粒子在场中运动）。提取信息以建立2D模拟：1. 中文题目摘要。2. 场区域（x, y, 宽, 高, Ex, Ey, Bz）。3. 粒子属性（x, y, vx, vy, m, q）。返回 JSON。";
+        const contents = [{ text: prompt }];
+        if (input) contents.push({ text: input });
+        if (imageData) contents.push({ inlineData: { mimeType: "image/jpeg", data: imageData.split(",")[1] } });
+
+        const response = await ai.models.generateContent({
+          model,
+          contents: { parts: contents },
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                problemDescription: { type: Type.STRING },
+                suggestedRegions: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { x: { type: Type.NUMBER }, y: { type: Type.NUMBER }, width: { type: Type.NUMBER }, height: { type: Type.NUMBER }, ex: { type: Type.NUMBER }, ey: { type: Type.NUMBER }, bz: { type: Type.NUMBER } }, required: ["x", "y", "width", "height", "ex", "ey", "bz"] } },
+                suggestedParticles: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { x: { type: Type.NUMBER }, y: { type: Type.NUMBER }, vx: { type: Type.NUMBER }, vy: { type: Type.NUMBER }, m: { type: Type.NUMBER }, q: { type: Type.NUMBER } }, required: ["x", "y", "vx", "vy", "m", "q"] } }
+              },
+              required: ["problemDescription", "suggestedRegions", "suggestedParticles"]
+            }
+          }
+        });
+        return JSON.parse(response.text);
+      } catch (e) {
+        console.error(e);
+        return null;
+      }
+    };
+
+    // --- 3. React UI 组件 ---
+    const COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'];
+
+    const App = () => {
+      const [state, setState] = useState({ regions: [], particles: [], isPlaying: false, time: 0, scale: 1, gravityEnabled: false });
+      const [problemText, setProblemText] = useState('');
+      const [originalImage, setOriginalImage] = useState(null);
+      const [isLoading, setIsLoading] = useState(false);
+      const [saveSuccess, setSaveSuccess] = useState(false);
+      const [selectedId, setSelectedId] = useState(null);
+      const [viewOffset, setViewOffset] = useState({ x: 0, y: 0 });
+      const [showHelp, setShowHelp] = useState(false);
+      const [summary, setSummary] = useState(null);
+
+      const canvasRef = useRef(null);
+      const fileInputRef = useRef(null);
+      const importInputRef = useRef(null);
+      const animationRef = useRef(null);
+
+      // 初始化加载本地存档
+      useEffect(() => {
+        const saved = localStorage.getItem('physilab_v2_save');
+        if (saved) {
+          try {
+            const parsed = JSON.parse(saved);
+            setState(prev => ({ ...prev, ...parsed, isPlaying: false, time: 0 }));
+          } catch(e) {}
+        }
+      }, []);
+
+      const handleSaveLocal = () => {
+        localStorage.setItem('physilab_v2_save', JSON.stringify({
+          regions: state.regions, particles: state.particles, scale: state.scale, gravityEnabled: state.gravityEnabled
+        }));
+        setSaveSuccess(true);
+        setTimeout(() => setSaveSuccess(false), 2000);
+      };
+
+      const handleExport = () => {
+        const data = JSON.stringify(state, null, 2);
+        const blob = new Blob([data], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = `physilab_scene_${Date.now()}.json`;
+        a.click();
+      };
+
+      const handleImport = (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          try {
+            const parsed = JSON.parse(ev.target.result);
+            setState(prev => ({ ...prev, ...parsed, isPlaying: false, time: 0 }));
+          } catch(e) { alert("导入失败"); }
+        };
+        reader.readAsText(file);
+      };
+
+      // 模拟循环
+      useEffect(() => {
+        if (state.isPlaying) {
+          const step = () => {
+            setState(prev => ({
+              ...prev,
+              particles: updatePhysics(prev.particles, prev.regions, prev.gravityEnabled),
+              time: prev.time + 0.01
+            }));
+            animationRef.current = requestAnimationFrame(step);
+          };
+          animationRef.current = requestAnimationFrame(step);
+        } else {
+          if (animationRef.current) cancelAnimationFrame(animationRef.current);
+        }
+        return () => cancelAnimationFrame(animationRef.current);
+      }, [state.isPlaying]);
+
+      // 渲染画布
+      useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const { width, height } = canvas;
+        ctx.clearRect(0, 0, width, height);
+        ctx.save();
+        ctx.translate(width / 2 + viewOffset.x, height / 2 + viewOffset.y);
+        ctx.scale(state.scale, -state.scale);
+
+        // 网格与轴
+        ctx.strokeStyle = '#1e293b'; ctx.lineWidth = 0.5/state.scale;
+        for(let i=-2000; i<=2000; i+=50) {
+          ctx.beginPath(); ctx.moveTo(i, -2000); ctx.lineTo(i, 2000); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(-2000, i); ctx.lineTo(2000, i); ctx.stroke();
+        }
+        ctx.strokeStyle = '#334155'; ctx.lineWidth = 1/state.scale;
+        ctx.beginPath(); ctx.moveTo(-2000, 0); ctx.lineTo(2000, 0); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, -2000); ctx.lineTo(0, 2000); ctx.stroke();
+
+        // 场区域
+        state.regions.forEach(r => {
+          ctx.fillStyle = 'rgba(59, 130, 246, 0.15)';
+          ctx.fillRect(r.x, r.y, r.width, r.height);
+          if (selectedId === r.id) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2/state.scale; ctx.strokeRect(r.x, r.y, r.width, r.height); }
+          // 电场箭头
+          if (Math.abs(r.ex) > 0 || Math.abs(r.ey) > 0) {
+            ctx.strokeStyle = 'rgba(239, 68, 68, 0.4)'; ctx.lineWidth = 1/state.scale;
+            for(let x = r.x+20; x<r.x+r.width; x+=40) {
+              for(let y = r.y+20; y<r.y+r.height; y+=40) {
+                ctx.save(); ctx.translate(x, y); ctx.rotate(Math.atan2(r.ey, r.ex));
+                ctx.beginPath(); ctx.moveTo(-5, 0); ctx.lineTo(5, 0); ctx.lineTo(2, -2); ctx.stroke(); ctx.restore();
+              }
+            }
+          }
+          // 磁场符号
+          if (Math.abs(r.bz) > 0) {
+            ctx.fillStyle = 'rgba(16, 185, 129, 0.6)'; ctx.font = `${14/state.scale}px sans-serif`; ctx.textAlign = 'center';
+            for(let x = r.x+20; x<r.x+r.width; x+=40) {
+              for(let y = r.y+20; y<r.y+r.height; y+=40) {
+                ctx.save(); ctx.translate(x, y); ctx.scale(1, -1);
+                ctx.fillText(r.bz > 0 ? '×' : '•', 0, 0); ctx.restore();
+              }
+            }
+          }
+        });
+
+        // 粒子
+        state.particles.forEach(p => {
+          if (p.path.length > 1) {
+            ctx.strokeStyle = p.color; ctx.lineWidth = 2/state.scale; ctx.beginPath();
+            ctx.moveTo(p.path[0].x, p.path[0].y); p.path.forEach(pt => ctx.lineTo(pt.x, pt.y)); ctx.stroke();
+          }
+          ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, p.radius/state.scale, 0, Math.PI*2); ctx.fill();
+          if (selectedId === p.id) { ctx.strokeStyle='#fff'; ctx.lineWidth=2/state.scale; ctx.beginPath(); ctx.arc(p.x,p.y,(p.radius+3)/state.scale,0,Math.PI*2); ctx.stroke(); }
+        });
+
+        ctx.restore();
+      }, [state, viewOffset, selectedId]);
+
+      const handleAIAction = async () => {
+        setIsLoading(true);
+        const res = await parseProblem(problemText, originalImage);
+        if (res) {
+          setSummary(res.problemDescription);
+          const newR = res.suggestedRegions.map((r, i) => ({ ...r, id: `ai-r-${i}` }));
+          const newP = res.suggestedParticles.map((p, i) => ({ ...p, id: `ai-p-${i}`, radius: 7, path: [{x:p.x,y:p.y}], color: COLORS[i%COLORS.length] }));
+          setState(s => ({ ...s, regions: newR, particles: newP, isPlaying: false, time: 0 }));
+        }
+        setIsLoading(false);
+      };
+
+      const selectedObj = state.regions.find(r => r.id === selectedId) || state.particles.find(p => p.id === selectedId);
+
+      return (
+        <div className="flex h-screen w-screen bg-slate-950 text-slate-200 overflow-hidden select-none">
+          {/* 侧边栏 */}
+          <div className="w-80 bg-slate-900 border-r border-slate-800 flex flex-col shadow-2xl z-20">
+            <div className="p-5 border-b border-slate-800 flex items-center justify-between">
+              <div>
+                <h1 className="text-xl font-bold flex items-center gap-2 text-white">
+                  <Zap className="text-yellow-400 fill-yellow-400" size={20} /> 物理实验室
+                </h1>
+                <p className="text-[9px] text-slate-500 uppercase tracking-widest font-black mt-1">Single-File Edition</p>
+              </div>
+              <button onClick={() => setShowHelp(true)} className="p-2 hover:bg-slate-800 rounded-full transition text-slate-400"><Info size={20}/></button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-6">
+              {/* 输入区 */}
+              <div className="space-y-3">
+                <label className="text-[10px] font-bold text-slate-500 uppercase flex items-center gap-2"><Activity size={12}/> 题目 AI 解析</label>
+                <textarea 
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm focus:ring-1 focus:ring-blue-600 transition h-24 outline-none resize-none"
+                  placeholder="输入题目描述..."
+                  value={problemText}
+                  onChange={e => setProblemText(e.target.value)}
+                />
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={() => fileInputRef.current?.click()} className="flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 py-2 rounded-xl text-xs font-semibold border border-slate-700 transition">
+                    <ImageIcon size={14}/> 上传图片
+                  </button>
+                  <button onClick={handleAIAction} disabled={isLoading} className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-lg shadow-blue-900/20 transition">
+                    {isLoading ? '建模中...' : <><Send size={14}/> 自动建模</>}
+                  </button>
+                </div>
+                <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={e => {
+                  const file = e.target.files[0];
+                  const reader = new FileReader();
+                  reader.onload = () => setOriginalImage(reader.result);
+                  reader.readAsDataURL(file);
+                }}/>
+              </div>
+
+              {/* 存档管理 */}
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-500 uppercase flex items-center gap-2"><FolderOpen size={12}/> 场景管理</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={handleSaveLocal} className={`flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-bold transition ${saveSuccess ? 'bg-emerald-600' : 'bg-slate-800 hover:bg-slate-700'}`}>
+                    {saveSuccess ? <Check size={14}/> : <Save size={14}/>} 浏览器存档
+                  </button>
+                  <button onClick={handleExport} className="flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 py-2 rounded-xl text-xs font-bold transition">
+                    <Download size={14}/> 导出文件
+                  </button>
+                  <button onClick={() => importInputRef.current?.click()} className="flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 py-2 rounded-xl text-xs font-bold transition col-span-2">
+                    <Upload size={14}/> 导入场景 (.json)
+                  </button>
+                </div>
+                <input type="file" ref={importInputRef} className="hidden" accept=".json" onChange={handleImport}/>
+              </div>
+
+              {/* 全局设置 */}
+              <div className="flex items-center justify-between p-3 bg-slate-800/30 rounded-xl border border-slate-800">
+                <span className="text-xs font-semibold flex items-center gap-2"><MoveDown size={14}/> 重力开启</span>
+                <button 
+                  onClick={() => setState(s => ({...s, gravityEnabled: !s.gravityEnabled}))}
+                  className={`w-10 h-5 rounded-full relative transition ${state.gravityEnabled ? 'bg-emerald-500' : 'bg-slate-700'}`}
+                >
+                  <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-all ${state.gravityEnabled ? 'left-5.5' : 'left-0.5'}`} />
+                </button>
+              </div>
+
+              {/* 物体列表 */}
+              <div className="space-y-4 pt-2">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-[10px] font-bold text-slate-500 uppercase">当前组件</h2>
+                  <div className="flex gap-1">
+                    <button onClick={() => {
+                      const id = `r-${Date.now()}`;
+                      setState(s => ({...s, regions: [...s.regions, {id, x:-100, y:-100, width:200, height:200, ex:0, ey:0, bz:5}]}));
+                      setSelectedId(id);
+                    }} className="p-1.5 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 rounded-lg"><Layers size={14}/></button>
+                    <button onClick={() => {
+                      const id = `p-${Date.now()}`;
+                      setState(s => ({...s, particles: [...s.particles, {id, x:0, y:0, vx:100, vy:0, m:1, q:1, radius:7, path:[{x:0,y:0}], color:COLORS[s.particles.length%COLORS.length]}]}));
+                      setSelectedId(id);
+                    }} className="p-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 rounded-lg"><Crosshair size={14}/></button>
+                  </div>
+                </div>
+                <div className="space-y-1 max-h-40 overflow-y-auto custom-scrollbar pr-1">
+                  {state.regions.map(r => (
+                    <div key={r.id} onClick={() => setSelectedId(r.id)} className={`p-2.5 rounded-lg text-[10px] cursor-pointer flex items-center justify-between transition ${selectedId === r.id ? 'bg-blue-600' : 'bg-slate-800/40 hover:bg-slate-800'}`}>
+                      <span className="flex items-center gap-2"><Layers size={10}/> 场区域 {r.id.slice(-3)}</span>
+                      {selectedId === r.id && <Trash2 size={12} className="text-white/60 hover:text-white" onClick={(e) => { e.stopPropagation(); setState(s => ({...s, regions: s.regions.filter(x=>x.id!==r.id)})); setSelectedId(null); }}/>}
+                    </div>
+                  ))}
+                  {state.particles.map(p => (
+                    <div key={p.id} onClick={() => setSelectedId(p.id)} className={`p-2.5 rounded-lg text-[10px] cursor-pointer flex items-center justify-between transition ${selectedId === p.id ? 'bg-emerald-600' : 'bg-slate-800/40 hover:bg-slate-800'}`}>
+                      <span className="flex items-center gap-2"><div className="w-2 h-2 rounded-full" style={{backgroundColor: p.color}}/> 粒子 {p.id.slice(-3)}</span>
+                      {selectedId === p.id && <Trash2 size={12} className="text-white/60 hover:text-white" onClick={(e) => { e.stopPropagation(); setState(s => ({...s, particles: s.particles.filter(x=>x.id!==p.id)})); setSelectedId(null); }}/>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* 属性编辑器 */}
+              {selectedObj && (
+                <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-4 animate-in slide-in-from-bottom-2 duration-300">
+                  <h3 className="text-[10px] font-bold text-slate-500 uppercase flex items-center gap-2"><Settings2 size={12}/> 参数调节</h3>
+                  {'width' in selectedObj ? (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div><label className="text-[9px] text-slate-500 block mb-1">X/Y 坐标</label><input type="number" value={selectedObj.x} onChange={e=>setState(s=>({...s, regions: s.regions.map(r=>r.id===selectedId?{...r, x:Number(e.target.value)}:r)}))} className="w-full bg-slate-900 border border-slate-800 rounded p-1 text-xs"/></div>
+                        <div><label className="text-[9px] text-slate-500 block mb-1">宽/高</label><input type="number" value={selectedObj.width} onChange={e=>setState(s=>({...s, regions: s.regions.map(r=>r.id===selectedId?{...r, width:Number(e.target.value)}:r)}))} className="w-full bg-slate-900 border border-slate-800 rounded p-1 text-xs"/></div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div><label className="text-[9px] text-red-400 block mb-1">电场 Ex</label><input type="number" value={selectedObj.ex} onChange={e=>setState(s=>({...s, regions: s.regions.map(r=>r.id===selectedId?{...r, ex:Number(e.target.value)}:r)}))} className="w-full bg-slate-900 border border-red-900/30 rounded p-1 text-xs text-red-400"/></div>
+                        <div><label className="text-[9px] text-emerald-400 block mb-1">磁场 Bz</label><input type="number" value={selectedObj.bz} onChange={e=>setState(s=>({...s, regions: s.regions.map(r=>r.id===selectedId?{...r, bz:Number(e.target.value)}:r)}))} className="w-full bg-slate-900 border border-emerald-900/30 rounded p-1 text-xs text-emerald-400"/></div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div><label className="text-[9px] text-slate-500 block mb-1">质量 (kg)</label><input type="number" value={selectedObj.m} onChange={e=>setState(s=>({...s, particles: s.particles.map(p=>p.id===selectedId?{...p, m:Number(e.target.value)}:p)}))} className="w-full bg-slate-900 border border-slate-800 rounded p-1 text-xs"/></div>
+                        <div><label className="text-[9px] text-slate-500 block mb-1">电量 (C)</label><input type="number" value={selectedObj.q} onChange={e=>setState(s=>({...s, particles: s.particles.map(p=>p.id===selectedId?{...p, q:Number(e.target.value)}:p)}))} className="w-full bg-slate-900 border border-slate-800 rounded p-1 text-xs"/></div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div><label className="text-[9px] text-blue-400 block mb-1">初速 Vx</label><input type="number" value={selectedObj.vx} onChange={e=>setState(s=>({...s, particles: s.particles.map(p=>p.id===selectedId?{...p, vx:Number(e.target.value)}:p)}))} className="w-full bg-slate-900 border border-blue-900/30 rounded p-1 text-xs"/></div>
+                        <div><label className="text-[9px] text-blue-400 block mb-1">初速 Vy</label><input type="number" value={selectedObj.vy} onChange={e=>setState(s=>({...s, particles: s.particles.map(p=>p.id===selectedId?{...p, vy:Number(e.target.value)}:p)}))} className="w-full bg-slate-900 border border-blue-900/30 rounded p-1 text-xs"/></div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* 主画布区 */}
+          <div className="flex-1 relative flex flex-col overflow-hidden bg-[radial-gradient(circle_at_center,_#111827_0%,_#020617_100%)]">
+            <div className="h-20 border-b border-slate-800 flex items-center justify-between px-10 bg-slate-900/50 backdrop-blur-md z-10">
+              <div className="flex items-center gap-6">
+                <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800">
+                  <button onClick={() => setState(s=>({...s, isPlaying: !s.isPlaying}))} className={`p-3 rounded-lg transition ${state.isPlaying ? 'text-red-500 bg-red-500/10' : 'text-emerald-500 bg-emerald-500/10'}`}>
+                    {state.isPlaying ? <Pause size={20} fill="currentColor"/> : <Play size={20} fill="currentColor"/>}
+                  </button>
+                  <button onClick={() => setState(s=>({...s, time:0, isPlaying:false, particles: s.particles.map(p=>({...p, x:p.path[0].x, y:p.path[0].y, vx:p.vx, vy:p.vy, path:[p.path[0]]}))}))} className="p-3 text-slate-400 hover:bg-slate-800 rounded-lg ml-1 transition">
+                    <RotateCcw size={20}/>
+                  </button>
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">模拟时长</span>
+                  <span className="fira-code text-blue-400 text-xl tabular-nums">{state.time.toFixed(3)}s</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-4">
+                <span className="text-[10px] text-slate-500 font-bold uppercase">缩放</span>
+                <input type="range" min="0.1" max="5" step="0.1" value={state.scale} onChange={e=>setState(s=>({...s, scale:Number(e.target.value)}))} className="w-32 accent-blue-600 h-1 bg-slate-800 rounded-full appearance-none cursor-pointer"/>
+              </div>
+            </div>
+
+            <canvas 
+              ref={canvasRef} 
+              width={window.innerWidth - 320} 
+              height={window.innerHeight - 80}
+              onMouseDown={e => {
+                const startX = e.clientX, startY = e.clientY;
+                const onMouseMove = (ev) => setViewOffset(v => ({ x: v.x + (ev.clientX - startX), y: v.y + (ev.clientY - startY) }));
+                const onMouseUp = () => { window.removeEventListener('mousemove', onMouseMove); window.removeEventListener('mouseup', onMouseUp); };
+                window.addEventListener('mousemove', onMouseMove); window.addEventListener('mouseup', onMouseUp);
+              }}
+              className="cursor-move"
+            />
+
+            {/* 部署指南弹窗 */}
+            {showHelp && (
+              <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-10">
+                <div className="bg-slate-900 border border-slate-700 w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+                  <div className="p-6 border-b border-slate-800 flex items-center justify-between">
+                    <h2 className="text-xl font-bold flex items-center gap-2"><Terminal className="text-emerald-400"/> 部署与配置指南</h2>
+                    <button onClick={() => setShowHelp(false)} className="p-2 hover:bg-slate-800 rounded-full"><X/></button>
+                  </div>
+                  <div className="p-8 overflow-y-auto custom-scrollbar space-y-8 text-sm leading-relaxed">
+                    <section className="space-y-4">
+                      <h3 className="text-emerald-400 font-bold flex items-center gap-2"><Key size={16}/> 第一步：获取 API Key</h3>
+                      <p className="text-slate-400">1. 访问 <a href="https://aistudio.google.com/" target="_blank" className="text-blue-400 underline">Google AI Studio</a> 获取您的 Gemini API Key。<br/>2. 该 Key 用于本程序的“自动识别”与“AI 物理建模”功能。</p>
+                    </section>
+                    <section className="space-y-4">
+                      <h3 className="text-emerald-400 font-bold flex items-center gap-2"><Terminal size={16}/> 第二步：使用 Vercel 部署 (推荐)</h3>
+                      <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 font-mono text-[11px] text-blue-300 space-y-2">
+                        <p># 1. 安装 Vercel CLI</p>
+                        <p className="text-white">npm install -g vercel</p>
+                        <p># 2. 在项目根目录运行部署命令</p>
+                        <p className="text-white">vercel</p>
+                        <p># 3. 配置 API Key (重要)</p>
+                        <p className="text-slate-500 italic">// 在 Vercel 控制台 -> Settings -> Environment Variables</p>
+                        <p className="text-slate-500 italic">// 添加 Key: API_KEY, Value: [您的Key]</p>
+                        <p className="text-white">vercel --prod</p>
+                      </div>
+                    </section>
+                    <section className="space-y-4">
+                      <h3 className="text-emerald-400 font-bold flex items-center gap-2"><Info size={16}/> 本地开发/临时使用</h3>
+                      <p className="text-slate-400">如果您直接在浏览器中打开此 HTML 文件，可以在代码第 27 行手动填入您的 API Key 进行测试：</p>
+                      <code className="block bg-slate-950 p-3 rounded-lg text-red-300">window.process = { env: { API_KEY: "您的Key" } };</code>
+                    </section>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* AI 题目浮窗 */}
+            {(originalImage || summary) && (
+              <div className="absolute top-6 left-6 w-80 bg-slate-900/90 border border-slate-800 rounded-2xl shadow-2xl backdrop-blur-xl p-4 animate-in fade-in zoom-in duration-500">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-[10px] font-black text-blue-400 uppercase tracking-tighter">AI 解析结果</span>
+                  <button onClick={() => { setOriginalImage(null); setSummary(null); }} className="p-1 hover:bg-slate-800 rounded"><X size={14}/></button>
+                </div>
+                {originalImage && <img src={originalImage} className="w-full rounded-lg mb-3 border border-slate-800"/>}
+                {summary && <p className="text-xs text-slate-300 italic leading-relaxed">{summary}</p>}
+              </div>
+            )}
+
+            {/* 状态栏 */}
+            <div className="absolute bottom-8 right-8 bg-slate-900/90 border border-slate-800 p-5 rounded-2xl shadow-2xl backdrop-blur-md text-[10px] space-y-2">
+              <div className="flex justify-between border-b border-slate-800 pb-2"><span className="text-slate-500">粒子数</span><span className="text-white font-mono">{state.particles.length}</span></div>
+              <div className="flex justify-between border-b border-slate-800 pb-2"><span className="text-slate-500">区域数</span><span className="text-white font-mono">{state.regions.length}</span></div>
+              <div className="pt-1 space-y-1">
+                <div className="flex items-center gap-2"><div className="w-2 h-0.5 bg-red-500"/> <span className="text-slate-500 uppercase">电场 E (红色)</span></div>
+                <div className="flex items-center gap-2"><span className="text-emerald-500 font-bold text-xs">×/•</span> <span className="text-slate-500 uppercase">磁场 B (绿色)</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const container = document.getElementById('root');
+    const root = createRoot(container);
+    root.render(React.createElement(App));
+  </script>
+</body>
 </html>
