@@ -1,0 +1,7 @@
+{
+  "name": "PhysiLab: EM Field Simulator",
+  "description": "An advanced physics simulation tool that allows users to solve electromagnetic problems. Users can input problems via text or image, define field regions (Electric and Magnetic), add custom particles, and simulate their motion according to Lorentz force laws.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
