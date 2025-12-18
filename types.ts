@@ -22,6 +22,10 @@ export interface Particle {
   y: number;
   vx: number;
   vy: number;
+  initX: number; // 初始 X
+  initY: number; // 初始 Y
+  initVx: number; // 初始 Vx
+  initVy: number; // 初始 Vy
   m: number; // Mass (kg)
   q: number; // Charge (C)
   radius: number; // Size of the particle in pixels/units
@@ -41,5 +45,5 @@ export interface SimulationState {
 export interface AISuggestion {
   problemDescription: string;
   suggestedRegions: Omit<FieldRegion, 'id' | 'color'>[];
-  suggestedParticles: Omit<Particle, 'id' | 'path' | 'color' | 'radius'>[];
+  suggestedParticles: Omit<Particle, 'id' | 'path' | 'color' | 'radius' | 'initX' | 'initY' | 'initVx' | 'initVy'>[];
 }
