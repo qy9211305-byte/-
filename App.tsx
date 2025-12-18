@@ -3,7 +3,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { 
   Play, Pause, RotateCcw, Image as ImageIcon, Trash2, 
   Settings2, Activity, Zap, Crosshair, Send, Layers,
-  MoveDown, X, Maximize2, HelpCircle, CircleDot, Move
+  MoveDown, X, Maximize2, HelpCircle, CircleDot, Save, FolderOpen, Download, Upload, Check
 } from 'lucide-react';
 import { FieldRegion, Particle, SimulationState, AISuggestion, Vector2D } from './types';
 import { updatePhysics } from './PhysicsEngine';
@@ -28,6 +28,7 @@ const App: React.FC = () => {
   const [problemText, setProblemText] = useState('');
   const [originalImage, setOriginalImage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [viewOffset, setViewOffset] = useState<Vector2D>({ x: 0, y: 0 });
   const [isDraggingCanvas, setIsDraggingCanvas] = useState(false);
@@ -37,7 +38,64 @@ const App: React.FC = () => {
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
   const animationRef = useRef<number | undefined>(undefined);
+
+  // Load initial state from LocalStorage if exists
+  useEffect(() => {
+    const saved = localStorage.getItem('physilab_save');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        // Basic validation
+        if (parsed.regions && parsed.particles) {
+          setState({ ...parsed, isPlaying: false, time: 0 });
+        }
+      } catch (e) {
+        console.error("Failed to load local save", e);
+      }
+    }
+  }, []);
+
+  // Save to LocalStorage
+  const handleSaveLocal = () => {
+    localStorage.setItem('physilab_save', JSON.stringify({
+      regions: state.regions,
+      particles: state.particles,
+      scale: state.scale,
+      gravityEnabled: state.gravityEnabled
+    }));
+    setSaveSuccess(true);
+    setTimeout(() => setSaveSuccess(false), 2000);
+  };
+
+  // Export to JSON file
+  const handleExportFile = () => {
+    const data = JSON.stringify(state, null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `physilab_scene_${new Date().getTime()}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Import from JSON file
+  const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const parsed = JSON.parse(event.target?.result as string);
+        setState({ ...parsed, isPlaying: false, time: 0 });
+      } catch (e) {
+        alert("无效的存档文件");
+      }
+    };
+    reader.readAsText(file);
+  };
 
   // Simulation Loop
   useEffect(() => {
@@ -234,6 +292,7 @@ const App: React.FC = () => {
         </div>
 
         <div className="flex-1 overflow-y-auto custom-scrollbar">
+          {/* AI Import */}
           <div className="p-4 space-y-3 border-b border-slate-800">
             <label className="text-[10px] font-bold text-slate-500 uppercase flex items-center gap-2">
               <Activity size={12} /> 题目录入
@@ -253,6 +312,34 @@ const App: React.FC = () => {
               </button>
             </div>
             <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept="image/*" className="hidden" />
+          </div>
+
+          {/* Save & Load Management */}
+          <div className="p-4 border-b border-slate-800 bg-slate-800/10">
+            <label className="text-[10px] font-bold text-slate-500 uppercase mb-3 flex items-center gap-2">
+              <FolderOpen size={12} /> 存档管理
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button 
+                onClick={handleSaveLocal}
+                className={`flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-bold transition ${saveSuccess ? 'bg-emerald-600' : 'bg-slate-800 hover:bg-slate-700'}`}
+              >
+                {saveSuccess ? <Check size={14} /> : <Save size={14} />} 浏览器保存
+              </button>
+              <button 
+                onClick={handleExportFile}
+                className="flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 py-2 rounded-xl text-xs font-bold transition"
+              >
+                <Download size={14} /> 导出文件
+              </button>
+              <button 
+                onClick={() => importInputRef.current?.click()}
+                className="flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 py-2 rounded-xl text-xs font-bold transition col-span-2"
+              >
+                <Upload size={14} /> 导入存档文件 (.json)
+              </button>
+              <input type="file" ref={importInputRef} onChange={handleImportFile} accept=".json" className="hidden" />
+            </div>
           </div>
 
           <div className="p-4 border-b border-slate-800 bg-slate-800/20">
